@@ -2,24 +2,120 @@
  * Setup Panel - Initial configuration for dataset and classes
  */
 
-import { useState } from 'react';
-import { FolderOpen, Tag, ArrowRight, Loader2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FolderOpen, Tag, ArrowRight, Loader2, Cpu, RefreshCw } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { initSession } from '../services/api';
+import { initSession, getAvailableModels, switchModel, type ModelInfo } from '../services/api';
+
+// LocalStorage key for persisting configuration
+const CONFIG_STORAGE_KEY = 'sam-annotator-config';
+
+interface SavedConfig {
+  datasetPath: string;
+  classesInput: string;
+  imagesSubfolder: string;
+  labelsSubfolder: string;
+  selectedModelId: string;
+}
 
 interface SetupPanelProps {
   onComplete: () => void;
 }
 
 export function SetupPanel({ onComplete }: SetupPanelProps) {
-  const [datasetPath, setDatasetPath] = useState('');
-  const [classesInput, setClassesInput] = useState('');
-  const [imagesSubfolder, setImagesSubfolder] = useState('images');
-  const [labelsSubfolder, setLabelsSubfolder] = useState('labels');
+  // Load saved config from localStorage
+  const loadSavedConfig = (): SavedConfig => {
+    try {
+      const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('Failed to load saved config:', e);
+    }
+    return {
+      datasetPath: '',
+      classesInput: '',
+      imagesSubfolder: 'images',
+      labelsSubfolder: 'labels',
+      selectedModelId: 'sam2_small',
+    };
+  };
+
+  const savedConfig = loadSavedConfig();
+
+  const [datasetPath, setDatasetPath] = useState(savedConfig.datasetPath);
+  const [classesInput, setClassesInput] = useState(savedConfig.classesInput);
+  const [imagesSubfolder, setImagesSubfolder] = useState(savedConfig.imagesSubfolder);
+  const [labelsSubfolder, setLabelsSubfolder] = useState(savedConfig.labelsSubfolder);
+  const [selectedModelId, setSelectedModelId] = useState(savedConfig.selectedModelId);
+  
   const [isLoading, setIsLoading] = useState(false);
+  const [isSwitchingModel, setIsSwitchingModel] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Model state
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [currentModel, setCurrentModel] = useState<string>('');
+  const [modelsLoading, setModelsLoading] = useState(true);
 
   const { setSession } = useStore();
+
+  // Load available models on mount
+  useEffect(() => {
+    loadModels();
+  }, []);
+
+  const loadModels = async () => {
+    setModelsLoading(true);
+    try {
+      const response = await getAvailableModels();
+      setModels(response.models);
+      setCurrentModel(response.current_model);
+      
+      // If saved model is different from current, switch to it
+      if (savedConfig.selectedModelId && savedConfig.selectedModelId !== response.current_model) {
+        const savedModelExists = response.models.some(m => m.id === savedConfig.selectedModelId);
+        if (savedModelExists) {
+          await handleModelSwitch(savedConfig.selectedModelId, false);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load models:', e);
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
+  // Save config to localStorage whenever it changes
+  useEffect(() => {
+    const config: SavedConfig = {
+      datasetPath,
+      classesInput,
+      imagesSubfolder,
+      labelsSubfolder,
+      selectedModelId,
+    };
+    localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+  }, [datasetPath, classesInput, imagesSubfolder, labelsSubfolder, selectedModelId]);
+
+  const handleModelSwitch = async (modelId: string, showLoading = true) => {
+    if (modelId === currentModel) return;
+    
+    if (showLoading) setIsSwitchingModel(true);
+    setError(null);
+    
+    try {
+      await switchModel(modelId);
+      setCurrentModel(modelId);
+      setSelectedModelId(modelId);
+    } catch (err: any) {
+      const message = err.response?.data?.detail || err.message || 'Failed to switch model';
+      setError(message);
+    } finally {
+      if (showLoading) setIsSwitchingModel(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,6 +182,58 @@ export function SetupPanel({ onComplete }: SetupPanelProps) {
         {/* Setup form */}
         <div className="panel">
           <form onSubmit={handleSubmit} className="p-6 space-y-6">
+            {/* Model Selection */}
+            <div>
+              <label className="input-label flex items-center gap-2">
+                <Cpu className="w-4 h-4" />
+                SAM Model
+              </label>
+              {modelsLoading ? (
+                <div className="flex items-center gap-2 text-gray-400 text-sm py-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading models...
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {models.map((model) => (
+                    <label
+                      key={model.id}
+                      className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                        currentModel === model.id
+                          ? 'border-blue-500 bg-blue-500/10'
+                          : 'border-gray-700 hover:border-gray-600 bg-gray-800/50'
+                      } ${isSwitchingModel ? 'opacity-50 pointer-events-none' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="model"
+                        value={model.id}
+                        checked={currentModel === model.id}
+                        onChange={() => handleModelSwitch(model.id)}
+                        className="mt-1"
+                        disabled={isSwitchingModel}
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-white">{model.name}</span>
+                          <span className="text-xs text-gray-500">({model.size})</span>
+                          {currentModel === model.id && (
+                            <span className="text-xs bg-blue-500/30 text-blue-300 px-2 py-0.5 rounded">
+                              Active
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-1">{model.description}</p>
+                      </div>
+                      {isSwitchingModel && selectedModelId === model.id && (
+                        <RefreshCw className="w-4 h-4 animate-spin text-blue-400" />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Dataset path */}
             <div>
               <label className="input-label flex items-center gap-2">
@@ -156,7 +304,7 @@ export function SetupPanel({ onComplete }: SetupPanelProps) {
             {/* Submit button */}
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || isSwitchingModel}
               className="btn btn-primary w-full flex items-center justify-center gap-2"
             >
               {isLoading ? (

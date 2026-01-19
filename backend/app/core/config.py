@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # SAM Model
     SAM_MODEL_PATH: str = "./models/sam3_vit_h.pth"
     SAM_MODEL_TYPE: str = "vit_h"
+    DEFAULT_MODEL_ID: str = "sam2_small"  # Default model to load on startup
     DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Cache settings

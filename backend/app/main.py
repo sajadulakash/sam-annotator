@@ -15,13 +15,13 @@ from app.core.config import settings
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - load SAM model on startup"""
-    # Initialize SAM service
+    # Initialize SAM service with default model (can be changed via API)
     app.state.sam_service = SAMService(
-        model_path=settings.SAM_MODEL_PATH,
+        model_id=settings.DEFAULT_MODEL_ID,
         device=settings.DEVICE,
         cache_size=settings.EMBEDDING_CACHE_SIZE
     )
-    print(f"SAM3 model loaded on {settings.DEVICE}")
+    print(f"SAM3 Annotator ready on {settings.DEVICE}")
     yield
     # Cleanup
     if hasattr(app.state, 'sam_service'):

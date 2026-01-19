@@ -4,13 +4,75 @@ SAM Router - SAM3 prediction endpoint
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.models.schemas import SAMPredictRequest, SAMPredictResponse, PolygonResult
+from app.models.schemas import (
+    SAMPredictRequest, SAMPredictResponse, PolygonResult,
+    ModelInfo, ModelsListResponse, SwitchModelRequest, SwitchModelResponse
+)
 from app.services.image_service import ImageService
 from app.routers.session import get_session_data
 
 
 router = APIRouter()
 image_service = ImageService()
+
+
+@router.get("/models", response_model=ModelsListResponse)
+async def list_models(request: Request):
+    """
+    Get list of available SAM models
+    """
+    sam_service = request.app.state.sam_service
+    models_data = sam_service.get_available_models()
+    
+    models = [
+        ModelInfo(
+            id=m["id"],
+            name=m["name"],
+            size=m["size"],
+            description=m["description"],
+            is_loaded=m["is_loaded"]
+        )
+        for m in models_data
+        if m["is_available"]  # Only show available models
+    ]
+    
+    return ModelsListResponse(
+        models=models,
+        current_model=sam_service.get_current_model()
+    )
+
+
+@router.post("/models/switch", response_model=SwitchModelResponse)
+async def switch_model(request: Request, switch_request: SwitchModelRequest):
+    """
+    Switch to a different SAM model
+    """
+    sam_service = request.app.state.sam_service
+    
+    # Check if model is available
+    models_data = sam_service.get_available_models()
+    model_info = next((m for m in models_data if m["id"] == switch_request.model_id), None)
+    
+    if not model_info:
+        raise HTTPException(status_code=404, detail=f"Model not found: {switch_request.model_id}")
+    
+    if not model_info.get("is_available", False):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Model not available: {switch_request.model_id}. Checkpoint file not found."
+        )
+    
+    # Switch model
+    success = sam_service.load_model(switch_request.model_id)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to load model")
+    
+    return SwitchModelResponse(
+        success=True,
+        model_id=switch_request.model_id,
+        message=f"Successfully switched to {model_info['name']}"
+    )
 
 
 @router.post("/predict", response_model=SAMPredictResponse)
@@ -118,5 +180,5 @@ async def sam_status(request: Request):
         "loaded": sam_service.model is not None,
         "device": sam_service.device,
         "cache_size": len(sam_service.embedding_cache),
-        "model_path": sam_service.model_path
+        "current_model": sam_service.get_current_model()
     }

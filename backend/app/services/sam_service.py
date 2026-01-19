@@ -18,6 +18,41 @@ import torch
 from app.core.config import settings
 
 
+# Available SAM2 models configuration
+AVAILABLE_MODELS = {
+    "sam2_tiny": {
+        "name": "SAM2 Hiera Tiny",
+        "size": "149 MB",
+        "description": "Fastest model, good for quick annotations",
+        "checkpoint": "sam2_hiera_tiny.pt",
+        "config": "sam2_hiera_t.yaml"
+    },
+    "sam2_small": {
+        "name": "SAM2 Hiera Small",
+        "size": "176 MB",
+        "description": "Balanced speed and accuracy",
+        "checkpoint": "sam2_hiera_small.pt",
+        "config": "sam2_hiera_s.yaml"
+    },
+    "sam2_base_plus": {
+        "name": "SAM2 Hiera Base+",
+        "size": "309 MB",
+        "description": "Better accuracy, moderate speed",
+        "checkpoint": "sam2_hiera_base_plus.pt",
+        "config": "sam2_hiera_b+.yaml"
+    },
+    "sam2_large": {
+        "name": "SAM2 Hiera Large",
+        "size": "857 MB",
+        "description": "Best accuracy, slower inference",
+        "checkpoint": "sam2_hiera_large.pt",
+        "config": "sam2_hiera_l.yaml"
+    }
+}
+
+MODELS_DIR = "/home/sajadulakash/models"
+
+
 class LRUCache(OrderedDict):
     """Simple LRU cache for embeddings"""
     
@@ -40,52 +75,85 @@ class LRUCache(OrderedDict):
 
 
 class SAMService:
-    """Service for SAM2 model inference"""
+    """Service for SAM2 model inference with multi-model support"""
     
-    def __init__(self, model_path: str, device: str = "cuda", cache_size: int = 100):
-        self.model_path = model_path
+    def __init__(self, model_id: str = "sam2_small", device: str = "cuda", cache_size: int = 100):
+        self.models_dir = MODELS_DIR
         self.device = device
         self.model = None
         self.predictor = None
         self.embedding_cache = LRUCache(maxsize=cache_size)
         self._current_image_id = None
+        self._current_model_id = None
         self._is_real_sam = False
-        self._load_model()
+        
+        # Load the specified model
+        self.load_model(model_id)
     
-    def _load_model(self):
-        """Load SAM2 model"""
+    def get_available_models(self) -> List[Dict[str, Any]]:
+        """Get list of available models with their status"""
+        models = []
+        for model_id, info in AVAILABLE_MODELS.items():
+            checkpoint_path = os.path.join(self.models_dir, info["checkpoint"])
+            is_available = os.path.exists(checkpoint_path)
+            models.append({
+                "id": model_id,
+                "name": info["name"],
+                "size": info["size"],
+                "description": info["description"],
+                "is_available": is_available,
+                "is_loaded": model_id == self._current_model_id
+            })
+        return models
+    
+    def get_current_model(self) -> str:
+        """Get currently loaded model ID"""
+        return self._current_model_id or "none"
+    
+    def load_model(self, model_id: str) -> bool:
+        """
+        Load a specific SAM2 model
+        
+        Args:
+            model_id: One of sam2_tiny, sam2_small, sam2_base_plus, sam2_large
+            
+        Returns:
+            True if model loaded successfully
+        """
+        if model_id not in AVAILABLE_MODELS:
+            print(f"Unknown model: {model_id}")
+            return False
+        
+        model_info = AVAILABLE_MODELS[model_id]
+        checkpoint_path = os.path.join(self.models_dir, model_info["checkpoint"])
+        
+        if not os.path.exists(checkpoint_path):
+            print(f"Model checkpoint not found: {checkpoint_path}")
+            return False
+        
         try:
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
             
-            # Find the model checkpoint
-            model_paths = [
-                self.model_path,
-                "/home/sajadulakash/models/sam2_hiera_small.pt",
-                os.path.expanduser("~/.cache/huggingface/hub/models--facebook--sam2-hiera-small/snapshots/e080ada8afd19df5e165abe71b006edc7f4c3d4e/sam2_hiera_small.pt"),
-                os.path.expanduser("~/models/sam2_hiera_small.pt"),
-            ]
+            print(f"Loading {model_info['name']} from {checkpoint_path}...")
             
-            checkpoint_path = None
-            for path in model_paths:
-                if os.path.exists(path):
-                    checkpoint_path = path
-                    break
-            
-            if checkpoint_path is None:
-                raise FileNotFoundError(f"No SAM2 checkpoint found. Tried: {model_paths}")
-            
-            print(f"Loading SAM2 model from {checkpoint_path}")
-            
-            # SAM2 config - use the small model config
-            model_cfg = "sam2_hiera_s.yaml"
+            # Free previous model memory
+            if self.model is not None:
+                del self.model
+                del self.predictor
+                torch.cuda.empty_cache()
             
             # Build SAM2 model
-            self.model = build_sam2(model_cfg, checkpoint_path, device=self.device)
+            self.model = build_sam2(model_info["config"], checkpoint_path, device=self.device)
             self.predictor = SAM2ImagePredictor(self.model)
             self._is_real_sam = True
+            self._current_model_id = model_id
             
-            print(f"SAM2 model loaded successfully on {self.device}")
+            # Clear embedding cache when switching models
+            self.clear_cache()
+            
+            print(f"{model_info['name']} loaded successfully on {self.device}")
+            return True
             
         except Exception as e:
             print(f"Warning: Could not load SAM2 model: {e}")
@@ -95,6 +163,8 @@ class SAMService:
             self.model = None
             self.predictor = None
             self._is_real_sam = False
+            self._current_model_id = None
+            return False
     
     def _get_image_hash(self, image: np.ndarray) -> str:
         """Generate hash for image caching"""

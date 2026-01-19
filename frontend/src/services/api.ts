@@ -74,8 +74,38 @@ export async function getSAMStatus(): Promise<{
   loaded: boolean;
   device: string;
   cache_size: number;
+  current_model: string;
 }> {
   const response = await api.get('/sam/status');
+  return response.data;
+}
+
+// ============ Model API ============
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  size: string;
+  description: string;
+  is_loaded: boolean;
+}
+
+export interface ModelsListResponse {
+  models: ModelInfo[];
+  current_model: string;
+}
+
+export async function getAvailableModels(): Promise<ModelsListResponse> {
+  const response = await api.get<ModelsListResponse>('/sam/models');
+  return response.data;
+}
+
+export async function switchModel(modelId: string): Promise<{
+  success: boolean;
+  model_id: string;
+  message: string;
+}> {
+  const response = await api.post('/sam/models/switch', { model_id: modelId });
   return response.data;
 }
 
