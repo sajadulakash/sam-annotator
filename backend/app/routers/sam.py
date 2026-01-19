@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.models.schemas import (
     SAMPredictRequest, SAMPredictResponse, PolygonResult,
-    ModelInfo, ModelsListResponse, SwitchModelRequest, SwitchModelResponse
+    ModelInfo, ModelsListResponse, SwitchModelRequest, SwitchModelResponse,
+    SAM3TextPredictRequest, SAM3TextPredictResponse, SAM3TextPredictResult
 )
 from app.services.image_service import ImageService
 from app.routers.session import get_session_data
@@ -180,5 +181,90 @@ async def sam_status(request: Request):
         "loaded": sam_service.model is not None,
         "device": sam_service.device,
         "cache_size": len(sam_service.embedding_cache),
-        "current_model": sam_service.get_current_model()
+        "current_model": sam_service.get_current_model(),
+        "is_sam3": sam_service._is_sam3
     }
+
+
+@router.post("/predict-text", response_model=SAM3TextPredictResponse)
+async def predict_text(request: Request, predict_request: SAM3TextPredictRequest):
+    """
+    SAM3-only: Run text-based prediction
+    
+    Takes a text prompt describing what to segment (e.g., "dog", "person"),
+    returns all matching instances as polygons.
+    """
+    sam_service = request.app.state.sam_service
+    
+    # Check if SAM3 is loaded
+    if not sam_service._is_sam3:
+        raise HTTPException(
+            status_code=400, 
+            detail="Text prompts require SAM3 model. Please switch to SAM3 first."
+        )
+    
+    # Find image across all sessions
+    image_info = None
+    
+    from app.routers.session import sessions
+    for sid, session in sessions.items():
+        if predict_request.image_id in session["images"]:
+            image_info = session["images"][predict_request.image_id]
+            break
+    
+    if not image_info:
+        raise HTTPException(status_code=404, detail="Image not found in any session")
+    
+    # Load image
+    try:
+        image, width, height = image_service.load_image(image_info.path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load image: {str(e)}")
+    
+    # Run text prediction
+    try:
+        results = sam_service.predict_text(
+            image=image,
+            image_id=predict_request.image_id,
+            text_prompt=predict_request.text_prompt,
+            simplification_epsilon=predict_request.simplification_epsilon
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SAM3 text prediction failed: {str(e)}")
+    
+    # Check for errors in results
+    if results and len(results) == 1 and "error" in results[0]:
+        raise HTTPException(status_code=400, detail=results[0]["error"])
+    
+    # Build response
+    result_items = []
+    total_time = 0
+    
+    for r in results:
+        if r.get("is_valid", False):
+            polygon_result = PolygonResult(
+                points=r["polygon"],
+                area=r["area"],
+                is_valid=r["is_valid"]
+            )
+            
+            item = SAM3TextPredictResult(
+                polygon=polygon_result,
+                polygon_normalized=r["polygon_normalized"],
+                score=r["score"],
+                instance_id=r.get("instance_id", 0),
+                text_prompt=r.get("text_prompt", predict_request.text_prompt)
+            )
+            
+            if predict_request.return_mask:
+                item.mask_base64 = r.get("mask_base64")
+            
+            result_items.append(item)
+            total_time = max(total_time, r.get("inference_time_ms", 0))
+    
+    return SAM3TextPredictResponse(
+        results=result_items,
+        total_instances=len(result_items),
+        inference_time_ms=total_time,
+        is_sam3=True
+    )

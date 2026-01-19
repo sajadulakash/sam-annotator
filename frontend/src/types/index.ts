@@ -84,6 +84,31 @@ export interface SAMPredictResponse {
   inference_time_ms: number;
 }
 
+// ============ SAM3 Text Prediction Types ============
+
+export interface SAM3TextPredictRequest {
+  image_id: string;
+  text_prompt: string;
+  simplification_epsilon?: number;
+  return_mask?: boolean;
+}
+
+export interface SAM3TextPredictResult {
+  polygon: PolygonResult;
+  polygon_normalized: [number, number][];
+  score: number;
+  mask_base64?: string;
+  instance_id: number;
+  text_prompt: string;
+}
+
+export interface SAM3TextPredictResponse {
+  results: SAM3TextPredictResult[];
+  total_instances: number;
+  inference_time_ms: number;
+  is_sam3: boolean;
+}
+
 // ============ Label Types ============
 
 export interface SaveLabelsRequest {

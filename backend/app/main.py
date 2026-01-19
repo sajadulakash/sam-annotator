@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
         device=settings.DEVICE,
         cache_size=settings.EMBEDDING_CACHE_SIZE
     )
-    print(f"SAM3 Annotator ready on {settings.DEVICE}")
+    print(f"SAM Annotator ready on {settings.DEVICE}")
     yield
     # Cleanup
     if hasattr(app.state, 'sam_service'):

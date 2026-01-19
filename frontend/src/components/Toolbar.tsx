@@ -2,6 +2,7 @@
  * Toolbar Component - Main toolbar with tools and actions
  */
 
+import { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import {
   Square,
@@ -15,16 +16,20 @@ import {
   Plus,
   Minus,
   Loader2,
+  Type,
+  Search,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { getSAMStatus } from '../services/api';
 
 interface ToolbarProps {
   onSave: () => void;
   onPrev: () => void;
   onNext: () => void;
+  onTextPredict?: (textPrompt: string) => void;
 }
 
-export function Toolbar({ onSave, onPrev, onNext }: ToolbarProps) {
+export function Toolbar({ onSave, onPrev, onNext, onTextPredict }: ToolbarProps) {
   const {
     toolMode,
     setToolMode,
@@ -40,6 +45,44 @@ export function Toolbar({ onSave, onPrev, onNext }: ToolbarProps) {
     redo,
   } = useStore();
 
+  const [isSam3, setIsSam3] = useState(false);
+  const [textPrompt, setTextPrompt] = useState('');
+  const [isTextPredicting, setIsTextPredicting] = useState(false);
+
+  // Check if SAM3 is active
+  useEffect(() => {
+    const checkSAM3 = async () => {
+      try {
+        const status = await getSAMStatus();
+        setIsSam3(status.is_sam3);
+      } catch (e) {
+        console.error('Failed to get SAM status:', e);
+      }
+    };
+    checkSAM3();
+    
+    // Periodically check (in case model is switched)
+    const interval = setInterval(checkSAM3, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleTextPredict = async () => {
+    if (!textPrompt.trim() || !onTextPredict) return;
+    setIsTextPredicting(true);
+    try {
+      await onTextPredict(textPrompt.trim());
+    } finally {
+      setIsTextPredicting(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleTextPredict();
+    }
+  };
+
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
@@ -48,7 +91,7 @@ export function Toolbar({ onSave, onPrev, onNext }: ToolbarProps) {
       {/* Logo */}
       <div className="mr-4">
         <div className="font-bold text-lg text-white leading-tight">
-          SAM3 <span className="text-blue-400">Annotator</span>
+          SAM <span className="text-blue-400">Annotator</span>
         </div>
         <div className="text-xs text-gray-500 leading-none">
           by sajadulakash
@@ -97,6 +140,38 @@ export function Toolbar({ onSave, onPrev, onNext }: ToolbarProps) {
               active={pointType === 'negative'}
               onClick={() => setPointType('negative')}
             />
+          </div>
+        </>
+      )}
+
+      {/* SAM3 Text Prompt (shown when SAM3 is active) */}
+      {isSam3 && (
+        <>
+          <div className="w-px h-8 bg-gray-700" />
+          <div className="flex items-center gap-2">
+            <Type className="w-4 h-4 text-purple-400" />
+            <input
+              type="text"
+              value={textPrompt}
+              onChange={(e) => setTextPrompt(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="e.g., person, dog, car..."
+              className="w-40 px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+              disabled={isTextPredicting}
+            />
+            <button
+              onClick={handleTextPredict}
+              disabled={!textPrompt.trim() || isTextPredicting}
+              className="btn btn-sm bg-purple-600 hover:bg-purple-700 text-white flex items-center gap-1 disabled:opacity-50"
+              title="Segment all matching objects (Enter)"
+            >
+              {isTextPredicting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Search className="w-4 h-4" />
+              )}
+              Find
+            </button>
           </div>
         </>
       )}

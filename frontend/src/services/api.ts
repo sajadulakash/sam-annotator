@@ -8,6 +8,8 @@ import type {
   SessionInitResponse,
   SAMPredictRequest,
   SAMPredictResponse,
+  SAM3TextPredictRequest,
+  SAM3TextPredictResponse,
   SaveLabelsRequest,
   SaveLabelsResponse,
   LoadLabelsResponse,
@@ -75,8 +77,20 @@ export async function getSAMStatus(): Promise<{
   device: string;
   cache_size: number;
   current_model: string;
+  is_sam3: boolean;
 }> {
   const response = await api.get('/sam/status');
+  return response.data;
+}
+
+export async function predictText(
+  _sessionId: string,
+  request: SAM3TextPredictRequest
+): Promise<SAM3TextPredictResponse> {
+  const response = await api.post<SAM3TextPredictResponse>(
+    `/sam/predict-text`,
+    { ...request }
+  );
   return response.data;
 }
 

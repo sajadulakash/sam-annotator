@@ -169,7 +169,7 @@ export function SetupPanel({ onComplete }: SetupPanelProps) {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-white mb-1">
-            SAM3 <span className="text-blue-400">Annotator</span>
+            SAM <span className="text-blue-400">Annotator</span>
           </h1>
           <p className="text-sm text-gray-500 mb-3">
             by sajadulakash

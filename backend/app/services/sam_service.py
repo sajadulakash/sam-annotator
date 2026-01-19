@@ -20,33 +20,45 @@ from app.core.config import settings
 
 # Available SAM2 models configuration
 AVAILABLE_MODELS = {
+    "sam3": {
+        "name": "SAM3 (Ultralytics)",
+        "size": "3.3 GB",
+        "description": "Best accuracy with text prompt support",
+        "checkpoint": "sam3.pt",
+        "config": None,
+        "is_sam3": True
+    },
     "sam2_tiny": {
         "name": "SAM2 Hiera Tiny",
         "size": "149 MB",
         "description": "Fastest model, good for quick annotations",
         "checkpoint": "sam2_hiera_tiny.pt",
-        "config": "sam2_hiera_t.yaml"
+        "config": "sam2_hiera_t.yaml",
+        "is_sam3": False
     },
     "sam2_small": {
         "name": "SAM2 Hiera Small",
         "size": "176 MB",
         "description": "Balanced speed and accuracy",
         "checkpoint": "sam2_hiera_small.pt",
-        "config": "sam2_hiera_s.yaml"
+        "config": "sam2_hiera_s.yaml",
+        "is_sam3": False
     },
     "sam2_base_plus": {
         "name": "SAM2 Hiera Base+",
         "size": "309 MB",
         "description": "Better accuracy, moderate speed",
         "checkpoint": "sam2_hiera_base_plus.pt",
-        "config": "sam2_hiera_b+.yaml"
+        "config": "sam2_hiera_b+.yaml",
+        "is_sam3": False
     },
     "sam2_large": {
         "name": "SAM2 Hiera Large",
         "size": "857 MB",
-        "description": "Best accuracy, slower inference",
+        "description": "Best SAM2 accuracy, slower inference",
         "checkpoint": "sam2_hiera_large.pt",
-        "config": "sam2_hiera_l.yaml"
+        "config": "sam2_hiera_l.yaml",
+        "is_sam3": False
     }
 }
 
@@ -75,17 +87,19 @@ class LRUCache(OrderedDict):
 
 
 class SAMService:
-    """Service for SAM2 model inference with multi-model support"""
+    """Service for SAM2/SAM3 model inference with multi-model support"""
     
-    def __init__(self, model_id: str = "sam2_small", device: str = "cuda", cache_size: int = 100):
+    def __init__(self, model_id: str = "sam3", device: str = "cuda", cache_size: int = 100):
         self.models_dir = MODELS_DIR
         self.device = device
         self.model = None
         self.predictor = None
+        self.sam3_predictor = None  # SAM3 semantic predictor for text prompts
         self.embedding_cache = LRUCache(maxsize=cache_size)
         self._current_image_id = None
         self._current_model_id = None
         self._is_real_sam = False
+        self._is_sam3 = False
         
         # Load the specified model
         self.load_model(model_id)
@@ -112,10 +126,10 @@ class SAMService:
     
     def load_model(self, model_id: str) -> bool:
         """
-        Load a specific SAM2 model
+        Load a specific SAM2 or SAM3 model
         
         Args:
-            model_id: One of sam2_tiny, sam2_small, sam2_base_plus, sam2_large
+            model_id: One of sam3, sam2_tiny, sam2_small, sam2_base_plus, sam2_large
             
         Returns:
             True if model loaded successfully
@@ -131,40 +145,89 @@ class SAMService:
             print(f"Model checkpoint not found: {checkpoint_path}")
             return False
         
+        # Free previous model memory
+        if self.model is not None:
+            del self.model
+            self.model = None
+        if self.predictor is not None:
+            del self.predictor
+            self.predictor = None
+        if self.sam3_predictor is not None:
+            del self.sam3_predictor
+            self.sam3_predictor = None
+        torch.cuda.empty_cache()
+        
         try:
-            from sam2.build_sam import build_sam2
-            from sam2.sam2_image_predictor import SAM2ImagePredictor
-            
-            print(f"Loading {model_info['name']} from {checkpoint_path}...")
-            
-            # Free previous model memory
-            if self.model is not None:
-                del self.model
-                del self.predictor
-                torch.cuda.empty_cache()
-            
-            # Build SAM2 model
-            self.model = build_sam2(model_info["config"], checkpoint_path, device=self.device)
-            self.predictor = SAM2ImagePredictor(self.model)
-            self._is_real_sam = True
-            self._current_model_id = model_id
-            
-            # Clear embedding cache when switching models
-            self.clear_cache()
-            
-            print(f"{model_info['name']} loaded successfully on {self.device}")
-            return True
-            
+            if model_info.get("is_sam3", False):
+                # Load SAM3 using Ultralytics
+                return self._load_sam3(checkpoint_path, model_info)
+            else:
+                # Load SAM2 using sam2 library
+                return self._load_sam2(checkpoint_path, model_info, model_id)
+                
         except Exception as e:
-            print(f"Warning: Could not load SAM2 model: {e}")
+            print(f"Warning: Could not load model: {e}")
             print("Running in mock mode for development")
             import traceback
             traceback.print_exc()
             self.model = None
             self.predictor = None
+            self.sam3_predictor = None
             self._is_real_sam = False
+            self._is_sam3 = False
             self._current_model_id = None
             return False
+    
+    def _load_sam3(self, checkpoint_path: str, model_info: dict) -> bool:
+        """Load SAM3 model using Ultralytics"""
+        from ultralytics import SAM
+        from ultralytics.models.sam import SAM3SemanticPredictor
+        
+        print(f"Loading {model_info['name']} from {checkpoint_path}...")
+        
+        # Load SAM3 model for bbox-based prediction (SAM2-style)
+        self.model = SAM(checkpoint_path)
+        
+        # Also create semantic predictor for text prompts
+        overrides = dict(
+            conf=0.25,
+            task="segment",
+            mode="predict",
+            model=checkpoint_path,
+            half=True,
+            verbose=False
+        )
+        self.sam3_predictor = SAM3SemanticPredictor(overrides=overrides)
+        
+        self._is_real_sam = True
+        self._is_sam3 = True
+        self._current_model_id = "sam3"
+        
+        # Clear embedding cache when switching models
+        self.clear_cache()
+        
+        print(f"{model_info['name']} loaded successfully on {self.device}")
+        return True
+    
+    def _load_sam2(self, checkpoint_path: str, model_info: dict, model_id: str) -> bool:
+        """Load SAM2 model using sam2 library"""
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        
+        print(f"Loading {model_info['name']} from {checkpoint_path}...")
+        
+        # Build SAM2 model
+        self.model = build_sam2(model_info["config"], checkpoint_path, device=self.device)
+        self.predictor = SAM2ImagePredictor(self.model)
+        self._is_real_sam = True
+        self._is_sam3 = False
+        self._current_model_id = model_id
+        
+        # Clear embedding cache when switching models
+        self.clear_cache()
+        
+        print(f"{model_info['name']} loaded successfully on {self.device}")
+        return True
     
     def _get_image_hash(self, image: np.ndarray) -> str:
         """Generate hash for image caching"""
@@ -185,16 +248,20 @@ class SAMService:
         if self._current_image_id == image_id:
             return True
         
-        if self._is_real_sam and self.predictor is not None:
+        self._current_image = image
+        self._current_image_id = image_id
+        
+        if self._is_sam3:
+            # SAM3 - set image on semantic predictor if needed
+            # (handled per-prediction)
+            return True
+        elif self._is_real_sam and self.predictor is not None:
             # Real SAM2 - set image (computes embedding internally)
             with torch.inference_mode():
                 self.predictor.set_image(image)
-            self._current_image_id = image_id
             return True
         else:
             # Mock mode
-            self._current_image = image
-            self._current_image_id = image_id
             return True
     
     def predict(
@@ -207,7 +274,7 @@ class SAMService:
         simplification_epsilon: float = 2.0
     ) -> Dict[str, Any]:
         """
-        Run SAM2 prediction with bbox and points prompts
+        Run SAM2/SAM3 prediction with bbox and points prompts
         
         Args:
             image: RGB image as numpy array
@@ -230,7 +297,10 @@ class SAMService:
         
         h, w = image.shape[:2]
         
-        if self._is_real_sam and self.predictor is not None:
+        if self._is_sam3 and self.model is not None:
+            # SAM3 prediction using Ultralytics
+            return self._predict_sam3_bbox(image, bbox, points_pos, points_neg, h, w, start_time, simplification_epsilon)
+        elif self._is_real_sam and self.predictor is not None:
             # Real SAM2 prediction
             with torch.inference_mode():
                 # Prepare box prompt - SAM2 expects [x1, y1, x2, y2]
@@ -285,6 +355,190 @@ class SAMService:
             "inference_time_ms": inference_time,
             "is_valid": len(polygon) >= settings.MIN_POLYGON_POINTS
         }
+    
+    def _predict_sam3_bbox(
+        self,
+        image: np.ndarray,
+        bbox: Tuple[float, float, float, float],
+        points_pos: List[Tuple[float, float]],
+        points_neg: List[Tuple[float, float]],
+        h: int,
+        w: int,
+        start_time: float,
+        simplification_epsilon: float
+    ) -> Dict[str, Any]:
+        """
+        SAM3 prediction using Ultralytics SAM with bbox prompt
+        """
+        try:
+            # SAM3 uses Ultralytics predict API with bboxes
+            results = self.model.predict(
+                source=image,
+                bboxes=[list(bbox)],
+                verbose=False
+            )
+            
+            if results and len(results) > 0 and results[0].masks is not None:
+                # Get the mask from results
+                mask_data = results[0].masks.data[0].cpu().numpy()
+                
+                # Resize mask to original image size if needed
+                if mask_data.shape != (h, w):
+                    mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                    mask = (mask > 0.5).astype(np.uint8) * 255
+                else:
+                    mask = (mask_data * 255).astype(np.uint8)
+                
+                # Get confidence score if available
+                if results[0].boxes is not None and len(results[0].boxes.conf) > 0:
+                    score = float(results[0].boxes.conf[0])
+                else:
+                    score = 0.9
+            else:
+                # Fallback to mock if no results
+                mask, score = self._generate_mock_mask(image, bbox, points_pos, points_neg)
+                
+        except Exception as e:
+            print(f"SAM3 prediction error: {e}")
+            mask, score = self._generate_mock_mask(image, bbox, points_pos, points_neg)
+        
+        # Convert mask to polygon
+        polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
+        
+        # Normalize polygon coordinates
+        polygon_normalized = [(x / w, y / h) for x, y in polygon]
+        
+        # Convert mask to base64 for visualization
+        mask_base64 = self._mask_to_base64(mask)
+        
+        inference_time = (time.time() - start_time) * 1000
+        
+        return {
+            "mask": mask,
+            "mask_base64": mask_base64,
+            "polygon": polygon,
+            "polygon_normalized": polygon_normalized,
+            "area": area,
+            "score": score,
+            "inference_time_ms": inference_time,
+            "is_valid": len(polygon) >= settings.MIN_POLYGON_POINTS
+        }
+    
+    def predict_text(
+        self,
+        image: np.ndarray,
+        image_id: str,
+        text_prompt: str,
+        simplification_epsilon: float = 2.0
+    ) -> List[Dict[str, Any]]:
+        """
+        SAM3-only: Predict masks using text prompt for semantic segmentation
+        
+        Args:
+            image: RGB image as numpy array
+            image_id: Image identifier
+            text_prompt: Text describing what to segment (e.g., "dog", "person", "car")
+            simplification_epsilon: Polygon simplification factor
+            
+        Returns:
+            List of dictionaries with mask, polygon, score for each detected instance
+        """
+        if not self._is_sam3:
+            return [{
+                "error": "Text prompts are only supported with SAM3 model",
+                "is_valid": False
+            }]
+        
+        start_time = time.time()
+        h, w = image.shape[:2]
+        results_list = []
+        
+        try:
+            if self.sam3_predictor is not None:
+                # Use SAM3SemanticPredictor for text-based segmentation
+                self.sam3_predictor.set_image(image)
+                masks = self.sam3_predictor.set_text(text_prompt)
+                
+                if masks is not None:
+                    # Handle multiple masks
+                    if len(masks.shape) == 2:
+                        masks = masks[np.newaxis, ...]
+                    
+                    for i, mask_data in enumerate(masks):
+                        # Resize if needed
+                        if mask_data.shape != (h, w):
+                            mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                            mask = (mask > 0.5).astype(np.uint8) * 255
+                        else:
+                            mask = (mask_data * 255).astype(np.uint8)
+                        
+                        # Convert to polygon
+                        polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
+                        polygon_normalized = [(x / w, y / h) for x, y in polygon]
+                        mask_base64 = self._mask_to_base64(mask)
+                        
+                        results_list.append({
+                            "mask": mask,
+                            "mask_base64": mask_base64,
+                            "polygon": polygon,
+                            "polygon_normalized": polygon_normalized,
+                            "area": area,
+                            "score": 0.9,
+                            "inference_time_ms": (time.time() - start_time) * 1000,
+                            "is_valid": len(polygon) >= settings.MIN_POLYGON_POINTS,
+                            "text_prompt": text_prompt,
+                            "instance_id": i
+                        })
+            
+            # Fallback to model.predict with texts if semantic predictor fails
+            if not results_list and self.model is not None:
+                results = self.model.predict(
+                    source=image,
+                    texts=[text_prompt],
+                    verbose=False
+                )
+                
+                if results and len(results) > 0 and results[0].masks is not None:
+                    for i, mask_data in enumerate(results[0].masks.data.cpu().numpy()):
+                        if mask_data.shape != (h, w):
+                            mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                            mask = (mask > 0.5).astype(np.uint8) * 255
+                        else:
+                            mask = (mask_data * 255).astype(np.uint8)
+                        
+                        polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
+                        polygon_normalized = [(x / w, y / h) for x, y in polygon]
+                        mask_base64 = self._mask_to_base64(mask)
+                        
+                        score = float(results[0].boxes.conf[i]) if results[0].boxes is not None and i < len(results[0].boxes.conf) else 0.9
+                        
+                        results_list.append({
+                            "mask": mask,
+                            "mask_base64": mask_base64,
+                            "polygon": polygon,
+                            "polygon_normalized": polygon_normalized,
+                            "area": area,
+                            "score": score,
+                            "inference_time_ms": (time.time() - start_time) * 1000,
+                            "is_valid": len(polygon) >= settings.MIN_POLYGON_POINTS,
+                            "text_prompt": text_prompt,
+                            "instance_id": i
+                        })
+                        
+        except Exception as e:
+            print(f"SAM3 text prediction error: {e}")
+            return [{
+                "error": str(e),
+                "is_valid": False
+            }]
+        
+        if not results_list:
+            return [{
+                "error": f"No objects found matching '{text_prompt}'",
+                "is_valid": False
+            }]
+        
+        return results_list
     
     def _generate_mock_mask(
         self,

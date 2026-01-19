@@ -10,7 +10,9 @@ import { CanvasArea } from './components/CanvasArea';
 import { RightPanel } from './components/RightPanel';
 import { Toolbar } from './components/Toolbar';
 import { StatusBar } from './components/StatusBar';
-import { loadLabels, saveLabels } from './services/api';
+import { loadLabels, saveLabels, predictText } from './services/api';
+import type { AnnotationObject } from './types';
+import { v4 as generateUUID } from './components/uuid';
 
 function App() {
   const [isSetup, setIsSetup] = useState(true);
@@ -153,6 +155,70 @@ function App() {
     }
   }, [currentImageIndex, hasUnsavedChanges, setCurrentImageIndex]);
 
+  // Handle SAM3 text prompt prediction
+  const handleTextPredict = useCallback(async (textPrompt: string) => {
+    if (!sessionId || !currentImage) return;
+    
+    try {
+      const response = await predictText(sessionId, {
+        image_id: currentImage.id,
+        text_prompt: textPrompt,
+        return_mask: false,
+      });
+      
+      if (response.results.length === 0) {
+        alert(`No "${textPrompt}" found in this image.`);
+        return;
+      }
+      
+      // Find class that matches the text prompt (case-insensitive)
+      let classId = 0;
+      let className = classes[0] || textPrompt;
+      
+      const matchingClassIndex = classes.findIndex(
+        c => c.toLowerCase() === textPrompt.toLowerCase()
+      );
+      if (matchingClassIndex >= 0) {
+        classId = matchingClassIndex;
+        className = classes[matchingClassIndex];
+      }
+      
+      // Create annotation objects from results
+      const newObjects: AnnotationObject[] = response.results.map((result) => {
+        // Compute bounding box from polygon
+        const xs = result.polygon.points.map(p => p[0]);
+        const ys = result.polygon.points.map(p => p[1]);
+        const bbox = {
+          x_min: Math.min(...xs),
+          y_min: Math.min(...ys),
+          x_max: Math.max(...xs),
+          y_max: Math.max(...ys),
+        };
+        
+        return {
+          id: generateUUID(),
+          class_id: classId,
+          class_name: className,
+          bbox,
+          points_pos: [],
+          points_neg: [],
+          polygon: result.polygon.points,
+          polygon_normalized: result.polygon_normalized,
+          score: result.score,
+        };
+      });
+      
+      // Add all new objects
+      const { addObject } = useStore.getState();
+      newObjects.forEach(obj => addObject(obj));
+      
+      console.log(`Found ${newObjects.length} "${textPrompt}" instances`);
+    } catch (error: any) {
+      const message = error.response?.data?.detail || error.message || 'Text prediction failed';
+      alert(message);
+    }
+  }, [sessionId, currentImage, classes]);
+
   if (isSetup) {
     return <SetupPanel onComplete={() => setIsSetup(false)} />;
   }
@@ -164,6 +230,7 @@ function App() {
         onSave={handleSave}
         onPrev={handlePrevImage}
         onNext={handleNextImage}
+        onTextPredict={handleTextPredict}
       />
 
       {/* Main content */}
