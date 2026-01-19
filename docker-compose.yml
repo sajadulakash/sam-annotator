@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: sam3-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./models:/app/models
+      - ${DATASET_PATH:-./data}:/data  # Mount your dataset folder
+    environment:
+      - SAM_MODEL_PATH=/app/models/sam3_vit_h.pth
+      - ALLOWED_PATHS=/data
+      - DEVICE=cuda  # Change to 'cpu' if no GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: sam3-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+networks:
+  default:
+    name: sam3-network
