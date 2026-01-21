@@ -164,8 +164,9 @@ export function SetupPanel({ onComplete }: SetupPanelProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
-      <div className="w-full max-w-lg">
+    <div className="h-screen bg-gray-900 overflow-y-auto">
+      <div className="min-h-full flex items-center justify-center p-6">
+        <div className="w-full max-w-lg">
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-white mb-1">
@@ -332,6 +333,7 @@ export function SetupPanel({ onComplete }: SetupPanelProps) {
     img002.png
   labels/  (will be created)`}
           </pre>
+        </div>
         </div>
       </div>
     </div>

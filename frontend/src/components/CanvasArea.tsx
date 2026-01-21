@@ -15,6 +15,7 @@ export function CanvasArea() {
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
   const [isPanning, setIsPanning] = useState(false);
   const [lastPanPoint, setLastPanPoint] = useState<Point | null>(null);
+  const [isSpaceHeld, setIsSpaceHeld] = useState(false);
 
   const {
     sessionId,
@@ -64,6 +65,33 @@ export function CanvasArea() {
     updateSize();
     window.addEventListener('resize', updateSize);
     return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
+  // Space key handler for panning
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        setIsSpaceHeld(true);
+      }
+    };
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsSpaceHeld(false);
+        setIsPanning(false);
+        setLastPanPoint(null);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
   }, []);
 
   // Fit image to canvas on load
@@ -124,15 +152,22 @@ export function CanvasArea() {
 
   // Handle mouse down
   const handleMouseDown = useCallback((e: any) => {
-    const pos = getImagePosition(e);
-    if (!pos || !currentImage) return;
-
-    // Check if space is held for panning
-    if (e.evt.button === 1 || (e.evt.button === 0 && e.evt.spaceKey)) {
+    // Check if space is held for panning (works anywhere on canvas)
+    if (e.evt.button === 0 && isSpaceHeld) {
       setIsPanning(true);
       setLastPanPoint({ x: e.evt.clientX, y: e.evt.clientY });
       return;
     }
+    
+    // Middle mouse button for panning
+    if (e.evt.button === 1) {
+      setIsPanning(true);
+      setLastPanPoint({ x: e.evt.clientX, y: e.evt.clientY });
+      return;
+    }
+
+    const pos = getImagePosition(e);
+    if (!pos || !currentImage) return;
 
     // Check bounds
     if (pos.x < 0 || pos.x > currentImage.width || pos.y < 0 || pos.y > currentImage.height) {
@@ -152,7 +187,7 @@ export function CanvasArea() {
       clearLassoPoints();
       addLassoPoint(pos);
     }
-  }, [toolMode, currentImage, getImagePosition, setTempBbox, selectedObjectId, clearLassoPoints, addLassoPoint]);
+  }, [toolMode, currentImage, getImagePosition, setTempBbox, selectedObjectId, clearLassoPoints, addLassoPoint, isSpaceHeld]);
 
   // Handle mouse move
   const handleMouseMove = useCallback((e: any) => {
@@ -335,7 +370,7 @@ export function CanvasArea() {
     <div 
       ref={containerRef} 
       className="flex-1 bg-gray-900 overflow-hidden"
-      style={{ cursor: getCursor(toolMode, isPanning) }}
+      style={{ cursor: getCursor(toolMode, isPanning, isSpaceHeld) }}
     >
       <Stage
         width={containerSize.width}
@@ -506,8 +541,9 @@ function getClassColor(classId: number): string {
   return colors[classId % colors.length];
 }
 
-function getCursor(toolMode: string, isPanning: boolean): string {
+function getCursor(toolMode: string, isPanning: boolean, isSpaceHeld: boolean): string {
   if (isPanning) return 'grabbing';
+  if (isSpaceHeld) return 'grab';
   switch (toolMode) {
     case 'bbox': return 'crosshair';
     case 'lasso': return 'crosshair';
