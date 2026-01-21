@@ -4,12 +4,15 @@ A web-based image annotation tool that uses **SAM 3** (Segment Anything Model) f
 
 ## Features
 
-- **Interactive Segmentation**: Draw bounding boxes and refine with positive/negative points
-- **SAM 3 Integration**: Fast, accurate mask predictions
+- **Interactive Segmentation**: Draw bounding boxes for initial mask, refine with lasso tool
+- **Lasso Tool**: Add or subtract mask regions by drawing freeform shapes
+- **SAM 3 Integration**: Fast, accurate mask predictions with multiple model options
+- **Auto-Annotation**: YOLO detector + SAM3 for automatic object detection and segmentation
 - **Multi-object Support**: Annotate multiple objects per image
 - **YOLO Export**: Saves annotations in YOLO segmentation format (.txt)
 - **Keyboard Shortcuts**: Efficient annotation workflow
 - **Undo/Redo**: Full history support per image
+- **Canvas Navigation**: Space+drag to pan, scroll to zoom
 
 ## Architecture
 
@@ -76,21 +79,26 @@ Access the application at `http://localhost:3000`
 ## Usage
 
 1. **Configure Dataset**: Enter the path to your image folder and define class names
-2. **Draw Bounding Box**: Press `B` and drag to create a bbox around an object
-3. **Refine with Points**: Press `P`, then left-click for positive points, right-click for negative
-4. **Assign Class**: Select from dropdown or press `1-9` for quick selection
-5. **Save**: Press `S` or click Save to export annotations
+2. **Select Model**: Choose SAM2 variant or SAM3 model
+3. **Draw Bounding Box**: Press `B` and drag to create a bbox around an object
+4. **Refine with Lasso**: Press `L`, select Add (+) or Subtract (-) mode, then draw to modify mask
+5. **Auto-Annotate**: Use YOLO detector + SAM3 for automatic annotation
+6. **Assign Class**: Select from dropdown or press `1-9` for quick selection
+7. **Save**: Press `S` or click Save to export annotations
 
 ## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
+| `V` | Select tool |
 | `B` | Bounding box tool |
-| `P` | Point refinement tool |
+| `L` | Lasso tool (mask editing) |
+| `+` / `=` | Lasso add mode |
+| `-` / `_` | Lasso subtract mode |
 | `1-9` | Select class by index |
 | `N` | Next image |
 | `Shift+N` | Previous image |
-| `S` | Save annotations |
+| `Ctrl+S` | Save annotations |
 | `Del` | Delete selected object |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` | Redo |
@@ -135,6 +143,14 @@ EMBEDDING_CACHE_SIZE=100
 ```
 VITE_API_URL=http://localhost:8000
 ```
+
+## Screenshots
+
+### Setup Page
+![Setup Page](assets/setup-page-view.png)
+
+### Canvas / Annotation View
+![Canvas View](assets/canvas-view.png)
 
 ## License
 

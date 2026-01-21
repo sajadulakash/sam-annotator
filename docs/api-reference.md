@@ -139,7 +139,136 @@ Check SAM service status.
   "loaded": true,
   "device": "cuda",
   "cache_size": 10,
-  "model_path": "./models/sam3_vit_h.pth"
+  "model_path": "./models/sam3_vit_h.pth",
+  "is_sam3": true
+}
+```
+
+---
+
+## Model Endpoints
+
+### Get Available Models
+`GET /models/list`
+
+Get list of available SAM models.
+
+**Response:**
+```json
+{
+  "models": [
+    {
+      "id": "sam2_tiny",
+      "name": "SAM2 Tiny",
+      "size": "38.9 MB",
+      "description": "Fastest, lowest memory usage"
+    },
+    {
+      "id": "sam3",
+      "name": "SAM3",
+      "size": "~2.4 GB",
+      "description": "Latest model with text prompts"
+    }
+  ],
+  "current_model": "sam3"
+}
+```
+
+### Switch Model
+`POST /models/switch`
+
+Switch to a different SAM model.
+
+**Request Body:**
+```json
+{
+  "model_id": "sam3"
+}
+```
+
+---
+
+## Detector Endpoints (SAM3 Only)
+
+### Get Available Detectors
+`GET /detectors/list`
+
+Get list of available YOLO detectors from the detectors folder.
+
+**Response:**
+```json
+{
+  "detectors": [
+    {
+      "id": "yolov8n",
+      "name": "yolov8n.pt",
+      "size": "6.2 MB",
+      "is_loaded": true
+    }
+  ],
+  "current_detector": "yolov8n"
+}
+```
+
+### Switch Detector
+`POST /detectors/switch`
+
+Load a different YOLO detector.
+
+**Request Body:**
+```json
+{
+  "detector_id": "yolov8n"
+}
+```
+
+### Get Detector Classes
+`GET /detectors/classes`
+
+Get classes supported by the current detector.
+
+**Response:**
+```json
+{
+  "classes": [
+    {"id": 0, "name": "person"},
+    {"id": 1, "name": "bicycle"},
+    {"id": 2, "name": "car"}
+  ]
+}
+```
+
+### Auto-Annotate
+`POST /sam/auto-annotate/{session_id}`
+
+Run YOLO detection + SAM3 segmentation for automatic annotation.
+
+**Request Body:**
+```json
+{
+  "image_id": "abc123def456",
+  "detector_id": "yolov8n",
+  "confidence": 0.25,
+  "class_filter": [0, 2]
+}
+```
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "polygon": {
+        "points": [[120, 110], [480, 115], [490, 390], [115, 385]]
+      },
+      "polygon_normalized": [[0.0625, 0.102], [0.25, 0.106]],
+      "bbox": {"x_min": 100, "y_min": 100, "x_max": 500, "y_max": 400},
+      "score": 0.85
+    }
+  ],
+  "total_instances": 3
 }
 ```
 
