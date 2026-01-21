@@ -5,9 +5,12 @@ SAM Router - SAM3 prediction endpoint
 from fastapi import APIRouter, HTTPException, Request
 
 from app.models.schemas import (
-    SAMPredictRequest, SAMPredictResponse, PolygonResult,
+    SAMPredictRequest, SAMPredictResponse, PolygonResult, BoundingBox,
     ModelInfo, ModelsListResponse, SwitchModelRequest, SwitchModelResponse,
-    SAM3TextPredictRequest, SAM3TextPredictResponse, SAM3TextPredictResult
+    SAM3TextPredictRequest, SAM3TextPredictResponse, SAM3TextPredictResult,
+    DetectorInfo, DetectorsListResponse, SwitchDetectorRequest, SwitchDetectorResponse,
+    DetectorClass, DetectorClassesResponse,
+    AutoAnnotateRequest, AutoAnnotateResponse, AutoAnnotateResult
 )
 from app.services.image_service import ImageService
 from app.routers.session import get_session_data
@@ -267,4 +270,184 @@ async def predict_text(request: Request, predict_request: SAM3TextPredictRequest
         total_instances=len(result_items),
         inference_time_ms=total_time,
         is_sam3=True
+    )
+
+
+# ============ Detector Endpoints ============
+
+@router.get("/detectors", response_model=DetectorsListResponse)
+async def list_detectors(request: Request):
+    """Get list of available detector models"""
+    sam_service = request.app.state.sam_service
+    detectors_data = sam_service.get_available_detectors()
+    
+    detectors = [
+        DetectorInfo(
+            id=d["id"],
+            name=d["name"],
+            filename=d["filename"],
+            size=d["size"],
+            is_loaded=d["is_loaded"]
+        )
+        for d in detectors_data
+    ]
+    
+    return DetectorsListResponse(
+        detectors=detectors,
+        current_detector=sam_service.get_current_detector()
+    )
+
+
+@router.post("/detectors/switch", response_model=SwitchDetectorResponse)
+async def switch_detector(request: Request, switch_request: SwitchDetectorRequest):
+    """Switch to a different detector model"""
+    sam_service = request.app.state.sam_service
+    
+    success = sam_service.load_detector(switch_request.detector_id)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Failed to load detector: {switch_request.detector_id}")
+    
+    # Get classes from the new detector
+    classes = [
+        DetectorClass(id=c["id"], name=c["name"])
+        for c in sam_service.get_detector_classes()
+    ]
+    
+    return SwitchDetectorResponse(
+        success=True,
+        detector_id=switch_request.detector_id,
+        message=f"Successfully loaded detector: {switch_request.detector_id}",
+        classes=classes
+    )
+
+
+@router.get("/detectors/classes", response_model=DetectorClassesResponse)
+async def get_detector_classes(request: Request):
+    """Get classes from the current detector model"""
+    sam_service = request.app.state.sam_service
+    
+    classes = [
+        DetectorClass(id=c["id"], name=c["name"])
+        for c in sam_service.get_detector_classes()
+    ]
+    
+    return DetectorClassesResponse(
+        classes=classes,
+        detector_id=sam_service.get_current_detector()
+    )
+
+
+# ============ Auto-Annotation Endpoint ============
+
+@router.post("/auto-annotate/{session_id}")
+async def auto_annotate(request: Request, session_id: str, annotate_request: dict):
+    """
+    Auto-annotate using detector + SAM3
+    
+    Uses YOLO detector to find objects, then SAM3 to create precise polygons.
+    Labels come from the detector model's class names.
+    """
+    from app.models.schemas import AutoAnnotateRequest, AutoAnnotateResponse, AutoAnnotateResult, PolygonResult, BoundingBox
+    
+    sam_service = request.app.state.sam_service
+    
+    # Check if SAM3 is loaded
+    if not sam_service._is_sam3:
+        raise HTTPException(
+            status_code=400, 
+            detail="Auto-annotation requires SAM3 model. Please switch to SAM3 first."
+        )
+    
+    # Get session
+    session = get_session_data(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Parse request
+    image_id = annotate_request.get("image_id")
+    detector_id = annotate_request.get("detector_id")
+    confidence = annotate_request.get("confidence", 0.3)
+    return_mask = annotate_request.get("return_mask", False)
+    simplification_epsilon = annotate_request.get("simplification_epsilon", 2.0)
+    
+    if not image_id:
+        raise HTTPException(status_code=400, detail="image_id is required")
+    
+    if image_id not in session["images"]:
+        raise HTTPException(status_code=404, detail="Image not found in session")
+    
+    image_info = session["images"][image_id]
+    
+    # Load image
+    try:
+        image, width, height = image_service.load_image(image_info.path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load image: {str(e)}")
+    
+    # Run auto-annotation
+    try:
+        results = sam_service.auto_annotate(
+            image=image,
+            image_id=image_id,
+            detector_id=detector_id,
+            confidence=confidence,
+            simplification_epsilon=simplification_epsilon
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Auto-annotation failed: {str(e)}")
+    
+    # Check for errors in results
+    if results and len(results) == 1 and "error" in results[0]:
+        raise HTTPException(status_code=400, detail=results[0]["error"])
+    
+    # Build response
+    result_items = []
+    total_time = 0
+    
+    for r in results:
+        if r.get("is_valid", False):
+            polygon_result = PolygonResult(
+                points=r["polygon"],
+                area=r["area"],
+                is_valid=r["is_valid"]
+            )
+            
+            bbox = None
+            if "bbox" in r:
+                bbox = BoundingBox(
+                    x_min=r["bbox"]["x_min"],
+                    y_min=r["bbox"]["y_min"],
+                    x_max=r["bbox"]["x_max"],
+                    y_max=r["bbox"]["y_max"]
+                )
+            
+            item = AutoAnnotateResult(
+                polygon=polygon_result,
+                polygon_normalized=r["polygon_normalized"],
+                score=r["score"],
+                instance_id=r.get("instance_id", 0),
+                class_id=r.get("class_id", 0),
+                class_name=r.get("class_name", "unknown"),
+                bbox=bbox
+            )
+            
+            if return_mask:
+                item.mask_base64 = r.get("mask_base64")
+            
+            result_items.append(item)
+            total_time = max(total_time, r.get("inference_time_ms", 0))
+    
+    # Get detector classes
+    detector_classes = [
+        DetectorClass(id=c["id"], name=c["name"])
+        for c in sam_service.get_detector_classes()
+    ]
+    
+    return AutoAnnotateResponse(
+        results=result_items,
+        total_instances=len(result_items),
+        inference_time_ms=total_time,
+        detector_id=sam_service.get_current_detector() or "",
+        detector_classes=detector_classes
     )

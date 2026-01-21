@@ -8,7 +8,7 @@ import useImage from 'use-image';
 import { useStore } from '../store/useStore';
 import { getImageUrl, predictMask } from '../services/api';
 import type { Point, BoundingBox, AnnotationObject } from '../types';
-import { v4 as uuidv4 } from './uuid';
+import polygonClipping from 'polygon-clipping';
 
 export function CanvasArea() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -23,16 +23,16 @@ export function CanvasArea() {
     objects,
     selectedObjectId,
     toolMode,
-    pointType,
+    lassoMode,
     tempBbox,
-    tempPoints,
+    lassoPoints,
     scale,
     position,
     maskOpacity,
     simplificationEpsilon,
     setTempBbox,
-    addTempPoint,
-    clearTempPoints,
+    addLassoPoint,
+    clearLassoPoints,
     addObject,
     updateObject,
     selectObject,
@@ -40,6 +40,9 @@ export function CanvasArea() {
     setPosition,
     setLoading,
   } = useStore();
+
+  // State for lasso drawing
+  const [isDrawingLasso, setIsDrawingLasso] = useState(false);
 
   // Load image
   const imageUrl = sessionId && currentImage
@@ -143,24 +146,13 @@ export function CanvasArea() {
         x_max: pos.x,
         y_max: pos.y,
       });
-    } else if (toolMode === 'point' && selectedObjectId) {
-      // Add point to selected object
-      const type = e.evt.button === 2 ? 'negative' : pointType;
-      addTempPoint(pos, type);
-      
-      // Trigger prediction
-      const obj = objects.find(o => o.id === selectedObjectId);
-      if (obj) {
-        runPrediction(obj, type === 'positive' 
-          ? [...tempPoints.pos, pos]
-          : tempPoints.pos,
-          type === 'negative'
-            ? [...tempPoints.neg, pos]
-            : tempPoints.neg
-        );
-      }
+    } else if (toolMode === 'lasso' && selectedObjectId) {
+      // Start drawing lasso
+      setIsDrawingLasso(true);
+      clearLassoPoints();
+      addLassoPoint(pos);
     }
-  }, [toolMode, pointType, currentImage, getImagePosition, setTempBbox, selectedObjectId, objects, tempPoints]);
+  }, [toolMode, currentImage, getImagePosition, setTempBbox, selectedObjectId, clearLassoPoints, addLassoPoint]);
 
   // Handle mouse move
   const handleMouseMove = useCallback((e: any) => {
@@ -180,15 +172,26 @@ export function CanvasArea() {
       if (pos) {
         setTempBbox({
           ...tempBbox,
-          x_max: Math.max(tempBbox.x_min, pos.x),
-          y_max: Math.max(tempBbox.y_min, pos.y),
+          x_max: pos.x,
+          y_max: pos.y,
         });
       }
     }
-  }, [isPanning, lastPanPoint, toolMode, tempBbox, position, getImagePosition, setPosition, setTempBbox]);
+
+    // Add points while drawing lasso
+    if (toolMode === 'lasso' && isDrawingLasso) {
+      const pos = getImagePosition(e);
+      if (pos && currentImage) {
+        // Only add point if within bounds
+        if (pos.x >= 0 && pos.x <= currentImage.width && pos.y >= 0 && pos.y <= currentImage.height) {
+          addLassoPoint(pos);
+        }
+      }
+    }
+  }, [isPanning, lastPanPoint, toolMode, tempBbox, position, getImagePosition, setPosition, setTempBbox, isDrawingLasso, addLassoPoint, currentImage]);
 
   // Handle mouse up
-  const handleMouseUp = useCallback(async (e: any) => {
+  const handleMouseUp = useCallback(async () => {
     if (isPanning) {
       setIsPanning(false);
       setLastPanPoint(null);
@@ -215,7 +218,24 @@ export function CanvasArea() {
 
       setTempBbox(null);
     }
-  }, [isPanning, toolMode, tempBbox, currentImage, sessionId, setTempBbox]);
+
+    // Handle lasso completion
+    if (toolMode === 'lasso' && isDrawingLasso && lassoPoints.length >= 3) {
+      setIsDrawingLasso(false);
+      
+      // Apply lasso mask modification to selected object
+      const selectedObj = objects.find(o => o.id === selectedObjectId);
+      if (selectedObj && sessionId && currentImage) {
+        await applyLassoMask(selectedObj, lassoPoints, lassoMode);
+      }
+      
+      clearLassoPoints();
+    } else if (toolMode === 'lasso' && isDrawingLasso) {
+      // Not enough points, cancel
+      setIsDrawingLasso(false);
+      clearLassoPoints();
+    }
+  }, [isPanning, toolMode, tempBbox, currentImage, sessionId, setTempBbox, isDrawingLasso, lassoPoints, lassoMode, objects, selectedObjectId, clearLassoPoints]);
 
   // Create object with SAM prediction
   const createObjectWithPrediction = async (bbox: BoundingBox) => {
@@ -245,7 +265,7 @@ export function CanvasArea() {
       };
 
       addObject(newObject);
-      clearTempPoints();
+      clearLassoPoints();
     } catch (error) {
       console.error('Prediction failed:', error);
     } finally {
@@ -253,34 +273,54 @@ export function CanvasArea() {
     }
   };
 
-  // Run prediction with points
-  const runPrediction = async (
+  // Apply lasso mask modification to an object's polygon
+  const applyLassoMask = async (
     obj: AnnotationObject,
-    pointsPos: Point[],
-    pointsNeg: Point[]
+    lasso: Point[],
+    mode: 'add' | 'subtract'
   ) => {
-    if (!sessionId || !currentImage) return;
-
+    if (!currentImage) return;
+    
     setLoading(true);
     try {
-      const response = await predictMask(sessionId, {
-        image_id: currentImage.id,
-        bbox: obj.bbox,
-        points_pos: pointsPos,
-        points_neg: pointsNeg,
-        simplification_epsilon: simplificationEpsilon,
-        return_mask: true,
-      });
-
+      // Convert lasso points to polygon format
+      const lassoPolygon: [number, number][] = lasso.map(p => [p.x, p.y]);
+      
+      // Use polygon boolean operations
+      const originalPolygon = obj.polygon;
+      let newPolygon: [number, number][];
+      
+      if (mode === 'add') {
+        // Union of original and lasso polygons
+        newPolygon = polygonUnion(originalPolygon, lassoPolygon);
+      } else {
+        // Subtract lasso from original
+        newPolygon = polygonDifference(originalPolygon, lassoPolygon);
+      }
+      
+      // Update bounding box
+      const xs = newPolygon.map(p => p[0]);
+      const ys = newPolygon.map(p => p[1]);
+      const newBbox: BoundingBox = {
+        x_min: Math.max(0, Math.min(...xs)),
+        y_min: Math.max(0, Math.min(...ys)),
+        x_max: Math.min(currentImage.width, Math.max(...xs)),
+        y_max: Math.min(currentImage.height, Math.max(...ys)),
+      };
+      
+      // Normalize polygon
+      const newPolygonNormalized: [number, number][] = newPolygon.map(([x, y]) => [
+        x / currentImage.width,
+        y / currentImage.height,
+      ]);
+      
       updateObject(obj.id, {
-        points_pos: pointsPos,
-        points_neg: pointsNeg,
-        polygon: response.polygon.points,
-        polygon_normalized: response.polygon_normalized,
-        score: response.score,
+        polygon: newPolygon,
+        polygon_normalized: newPolygonNormalized,
+        bbox: newBbox,
       });
     } catch (error) {
-      console.error('Prediction failed:', error);
+      console.error('Lasso mask operation failed:', error);
     } finally {
       setLoading(false);
     }
@@ -334,10 +374,10 @@ export function CanvasArea() {
           {/* Temp bbox */}
           {tempBbox && (
             <Rect
-              x={position.x + tempBbox.x_min * scale}
-              y={position.y + tempBbox.y_min * scale}
-              width={(tempBbox.x_max - tempBbox.x_min) * scale}
-              height={(tempBbox.y_max - tempBbox.y_min) * scale}
+              x={position.x + Math.min(tempBbox.x_min, tempBbox.x_max) * scale}
+              y={position.y + Math.min(tempBbox.y_min, tempBbox.y_max) * scale}
+              width={Math.abs(tempBbox.x_max - tempBbox.x_min) * scale}
+              height={Math.abs(tempBbox.y_max - tempBbox.y_min) * scale}
               stroke="#3b82f6"
               strokeWidth={2}
               dash={[5, 5]}
@@ -345,27 +385,26 @@ export function CanvasArea() {
             />
           )}
 
-          {/* Temp points */}
-          {tempPoints.pos.map((point, i) => (
-            <Circle
-              key={`pos-${i}`}
-              x={position.x + point.x * scale}
-              y={position.y + point.y * scale}
-              radius={6}
-              fill="#22c55e"
-              stroke="#fff"
+          {/* Lasso drawing */}
+          {isDrawingLasso && lassoPoints.length >= 2 && (
+            <Line
+              points={lassoPoints.flatMap(p => [
+                position.x + p.x * scale,
+                position.y + p.y * scale,
+              ])}
+              stroke={lassoMode === 'add' ? '#22c55e' : '#ef4444'}
               strokeWidth={2}
+              dash={[5, 5]}
+              closed={false}
             />
-          ))}
-          {tempPoints.neg.map((point, i) => (
+          )}
+          {isDrawingLasso && lassoPoints.length >= 1 && lassoPoints.map((point, i) => (
             <Circle
-              key={`neg-${i}`}
+              key={`lasso-${i}`}
               x={position.x + point.x * scale}
               y={position.y + point.y * scale}
-              radius={6}
-              fill="#ef4444"
-              stroke="#fff"
-              strokeWidth={2}
+              radius={3}
+              fill={lassoMode === 'add' ? '#22c55e' : '#ef4444'}
             />
           ))}
         </Layer>
@@ -471,11 +510,104 @@ function getCursor(toolMode: string, isPanning: boolean): string {
   if (isPanning) return 'grabbing';
   switch (toolMode) {
     case 'bbox': return 'crosshair';
-    case 'point': return 'crosshair';
+    case 'lasso': return 'crosshair';
     default: return 'default';
   }
 }
 
 function generateId(): string {
   return `obj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Type for polygon ring (array of [x, y] pairs)
+type Ring = [number, number][];
+type Polygon = Ring[];
+
+// Polygon boolean operations using polygon-clipping library
+function polygonUnion(
+  poly1: [number, number][],
+  poly2: [number, number][]
+): [number, number][] {
+  try {
+    // Convert to polygon-clipping format (Polygon = array of rings)
+    const p1: Polygon = [poly1];
+    const p2: Polygon = [poly2];
+    
+    const result = polygonClipping.union(p1, p2);
+    
+    // Return the largest polygon from the result
+    if (result.length > 0 && result[0].length > 0) {
+      // Find the largest polygon by area
+      let largestPoly = result[0][0];
+      let maxArea = Math.abs(polygonArea(largestPoly));
+      
+      for (const multiPoly of result) {
+        for (const ring of multiPoly) {
+          const area = Math.abs(polygonArea(ring));
+          if (area > maxArea) {
+            maxArea = area;
+            largestPoly = ring;
+          }
+        }
+      }
+      
+      return largestPoly as [number, number][];
+    }
+    
+    return poly1; // Fallback to original
+  } catch (error) {
+    console.error('Polygon union failed:', error);
+    return poly1;
+  }
+}
+
+function polygonDifference(
+  poly1: [number, number][],
+  poly2: [number, number][]
+): [number, number][] {
+  try {
+    // Convert to polygon-clipping format
+    const p1: Polygon = [poly1];
+    const p2: Polygon = [poly2];
+    
+    const result = polygonClipping.difference(p1, p2);
+    
+    // Return the largest polygon from the result
+    if (result.length > 0 && result[0].length > 0) {
+      // Find the largest polygon by area
+      let largestPoly = result[0][0];
+      let maxArea = Math.abs(polygonArea(largestPoly));
+      
+      for (const multiPoly of result) {
+        for (const ring of multiPoly) {
+          const area = Math.abs(polygonArea(ring));
+          if (area > maxArea) {
+            maxArea = area;
+            largestPoly = ring;
+          }
+        }
+      }
+      
+      return largestPoly as [number, number][];
+    }
+    
+    return poly1; // Fallback to original if difference results in nothing
+  } catch (error) {
+    console.error('Polygon difference failed:', error);
+    return poly1;
+  }
+}
+
+// Calculate polygon area using shoelace formula
+function polygonArea(polygon: Ring): number {
+  let area = 0;
+  const n = polygon.length;
+  
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += polygon[i][0] * polygon[j][1];
+    area -= polygon[j][0] * polygon[i][1];
+  }
+  
+  return area / 2;
 }

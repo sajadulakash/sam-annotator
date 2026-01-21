@@ -3,13 +3,13 @@
  */
 
 import { useStore } from '../store/useStore';
-import { Cpu, Clock } from 'lucide-react';
+import { Cpu } from 'lucide-react';
 
 export function StatusBar() {
   const {
     currentImage,
     toolMode,
-    pointType,
+    lassoMode,
     scale,
     objects,
     isLoading,
@@ -32,9 +32,9 @@ export function StatusBar() {
       <div className="flex items-center gap-4">
         <span>
           Tool: <span className="text-white capitalize">{toolMode}</span>
-          {toolMode === 'point' && (
-            <span className={pointType === 'positive' ? 'text-green-400' : 'text-red-400'}>
-              {' '}({pointType})
+          {toolMode === 'lasso' && (
+            <span className={lassoMode === 'add' ? 'text-green-400' : 'text-red-400'}>
+              {' '}({lassoMode})
             </span>
           )}
         </span>

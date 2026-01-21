@@ -7,7 +7,7 @@ import type {
   ImageInfo,
   AnnotationObject,
   ToolMode,
-  PointType,
+  LassoMode,
   Point,
   BoundingBox,
   HistoryEntry,
@@ -30,10 +30,10 @@ interface AppState {
   
   // Drawing state
   toolMode: ToolMode;
-  pointType: PointType;
+  lassoMode: LassoMode;
   isDrawingBbox: boolean;
   tempBbox: BoundingBox | null;
-  tempPoints: { pos: Point[]; neg: Point[] };
+  lassoPoints: Point[];
   
   // Canvas
   scale: number;
@@ -60,10 +60,10 @@ interface AppState {
   selectObject: (id: string | null) => void;
   
   setToolMode: (mode: ToolMode) => void;
-  setPointType: (type: PointType) => void;
+  setLassoMode: (mode: LassoMode) => void;
   setTempBbox: (bbox: BoundingBox | null) => void;
-  addTempPoint: (point: Point, type: PointType) => void;
-  clearTempPoints: () => void;
+  addLassoPoint: (point: Point) => void;
+  clearLassoPoints: () => void;
   
   setScale: (scale: number) => void;
   setPosition: (position: Point) => void;
@@ -91,10 +91,10 @@ const initialState = {
   objects: [],
   selectedObjectId: null,
   toolMode: 'bbox' as ToolMode,
-  pointType: 'positive' as PointType,
+  lassoMode: 'add' as LassoMode,
   isDrawingBbox: false,
   tempBbox: null,
-  tempPoints: { pos: [], neg: [] },
+  lassoPoints: [] as Point[],
   scale: 1,
   position: { x: 0, y: 0 },
   maskOpacity: 0.5,
@@ -132,7 +132,7 @@ export const useStore = create<AppState>((set, get) => ({
         objects: [],
         selectedObjectId: null,
         tempBbox: null,
-        tempPoints: { pos: [], neg: [] },
+        lassoPoints: [],
         history: [],
         historyIndex: -1,
         hasUnsavedChanges: false,
@@ -184,28 +184,25 @@ export const useStore = create<AppState>((set, get) => ({
       toolMode: mode,
       tempBbox: null,
       isDrawingBbox: false,
+      lassoPoints: [],
     });
   },
   
-  setPointType: (type) => {
-    set({ pointType: type });
+  setLassoMode: (mode) => {
+    set({ lassoMode: mode });
   },
   
   setTempBbox: (bbox) => {
     set({ tempBbox: bbox });
   },
   
-  addTempPoint: (point, type) => {
-    const { tempPoints } = get();
-    if (type === 'positive') {
-      set({ tempPoints: { ...tempPoints, pos: [...tempPoints.pos, point] } });
-    } else {
-      set({ tempPoints: { ...tempPoints, neg: [...tempPoints.neg, point] } });
-    }
+  addLassoPoint: (point) => {
+    const { lassoPoints } = get();
+    set({ lassoPoints: [...lassoPoints, point] });
   },
   
-  clearTempPoints: () => {
-    set({ tempPoints: { pos: [], neg: [] } });
+  clearLassoPoints: () => {
+    set({ lassoPoints: [] });
   },
   
   setScale: (scale) => {

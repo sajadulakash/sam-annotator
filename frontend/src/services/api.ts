@@ -14,6 +14,9 @@ import type {
   SaveLabelsResponse,
   LoadLabelsResponse,
   ImageInfo,
+  DetectorsListResponse,
+  DetectorClass,
+  DetectorClassesResponse,
 } from '../types';
 
 const API_BASE = '/api';
@@ -151,6 +154,58 @@ export async function deleteLabels(
   imageId: string
 ): Promise<{ success: boolean }> {
   const response = await api.delete(`/labels/delete/${sessionId}/${imageId}`);
+  return response.data;
+}
+
+// ============ Detector API ============
+
+export async function getAvailableDetectors(): Promise<DetectorsListResponse> {
+  const response = await api.get<DetectorsListResponse>('/sam/detectors');
+  return response.data;
+}
+
+export async function switchDetector(detectorId: string): Promise<{
+  success: boolean;
+  detector_id: string;
+  message: string;
+  classes: DetectorClass[];
+}> {
+  const response = await api.post('/sam/detectors/switch', { detector_id: detectorId });
+  return response.data;
+}
+
+export async function getDetectorClasses(): Promise<DetectorClassesResponse> {
+  const response = await api.get<DetectorClassesResponse>('/sam/detectors/classes');
+  return response.data;
+}
+
+// ============ Auto-Annotation API ============
+
+export async function autoAnnotate(
+  sessionId: string,
+  request: {
+    image_id: string;
+    detector_id?: string;
+    confidence?: number;
+    simplification_epsilon?: number;
+    return_mask?: boolean;
+  }
+): Promise<{
+  results: Array<{
+    polygon: { points: [number, number][]; area: number; is_valid: boolean };
+    polygon_normalized: [number, number][];
+    score: number;
+    instance_id: number;
+    class_id: number;
+    class_name: string;
+    bbox?: { x_min: number; y_min: number; x_max: number; y_max: number };
+  }>;
+  total_instances: number;
+  inference_time_ms: number;
+  detector_id: string;
+  detector_classes: Array<{ id: number; name: string }>;
+}> {
+  const response = await api.post(`/sam/auto-annotate/${sessionId}`, request);
   return response.data;
 }
 

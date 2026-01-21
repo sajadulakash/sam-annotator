@@ -63,6 +63,7 @@ AVAILABLE_MODELS = {
 }
 
 MODELS_DIR = "/home/sajadulakash/models"
+DETECTORS_DIR = "/home/sajadulakash/models/detectors"
 
 
 class LRUCache(OrderedDict):
@@ -91,6 +92,7 @@ class SAMService:
     
     def __init__(self, model_id: str = "sam3", device: str = "cuda", cache_size: int = 100):
         self.models_dir = MODELS_DIR
+        self.detectors_dir = DETECTORS_DIR
         self.device = device
         self.model = None
         self.predictor = None
@@ -101,8 +103,71 @@ class SAMService:
         self._is_real_sam = False
         self._is_sam3 = False
         
+        # Detector model state
+        self._yolo_detector = None
+        self._yolo_class_names = None
+        self._current_detector_id = None
+        
         # Load the specified model
         self.load_model(model_id)
+    
+    def get_available_detectors(self) -> List[Dict[str, Any]]:
+        """Get list of available detector models in the detectors folder"""
+        detectors = []
+        if os.path.exists(self.detectors_dir):
+            for filename in os.listdir(self.detectors_dir):
+                if filename.endswith('.pt'):
+                    filepath = os.path.join(self.detectors_dir, filename)
+                    size_bytes = os.path.getsize(filepath)
+                    size_mb = size_bytes / (1024 * 1024)
+                    detectors.append({
+                        "id": filename.replace('.pt', ''),
+                        "name": filename.replace('.pt', '').replace('_', ' ').title(),
+                        "filename": filename,
+                        "size": f"{size_mb:.1f} MB",
+                        "is_loaded": filename.replace('.pt', '') == self._current_detector_id
+                    })
+        return detectors
+    
+    def get_current_detector(self) -> Optional[str]:
+        """Get currently loaded detector model ID"""
+        return self._current_detector_id
+    
+    def load_detector(self, detector_id: str) -> bool:
+        """Load a specific detector model"""
+        detector_path = os.path.join(self.detectors_dir, f"{detector_id}.pt")
+        
+        if not os.path.exists(detector_path):
+            print(f"Detector not found: {detector_path}")
+            return False
+        
+        try:
+            from ultralytics import YOLO
+            
+            # Free previous detector
+            if self._yolo_detector is not None:
+                del self._yolo_detector
+                self._yolo_detector = None
+                torch.cuda.empty_cache()
+            
+            print(f"Loading detector: {detector_id} from {detector_path}...")
+            self._yolo_detector = YOLO(detector_path)
+            self._yolo_class_names = self._yolo_detector.names
+            self._current_detector_id = detector_id
+            print(f"Detector {detector_id} loaded with {len(self._yolo_class_names)} classes")
+            return True
+        except Exception as e:
+            print(f"Failed to load detector: {e}")
+            return False
+    
+    def get_detector_classes(self) -> List[Dict[str, Any]]:
+        """Get list of classes from the current detector"""
+        if self._yolo_class_names is None:
+            return []
+        return [
+            {"id": class_id, "name": class_name}
+            for class_id, class_name in self._yolo_class_names.items()
+        ]
     
     def get_available_models(self) -> List[Dict[str, Any]]:
         """Get list of available models with their status"""
@@ -432,12 +497,13 @@ class SAMService:
         simplification_epsilon: float = 2.0
     ) -> List[Dict[str, Any]]:
         """
-        SAM3-only: Predict masks using text prompt for semantic segmentation
+        SAM3-only: Predict masks using text prompt for concept segmentation
+        Uses SAM3SemanticPredictor for native text-based segmentation
         
         Args:
             image: RGB image as numpy array
             image_id: Image identifier
-            text_prompt: Text describing what to segment (e.g., "dog", "person", "car")
+            text_prompt: Text describing what to segment (e.g., "dog", "red apple", "person wearing hat")
             simplification_epsilon: Polygon simplification factor
             
         Returns:
@@ -449,84 +515,94 @@ class SAMService:
                 "is_valid": False
             }]
         
+        if self.sam3_predictor is None:
+            return [{
+                "error": "SAM3 semantic predictor not initialized",
+                "is_valid": False
+            }]
+        
         start_time = time.time()
         h, w = image.shape[:2]
         results_list = []
         
         try:
-            if self.sam3_predictor is not None:
-                # Use SAM3SemanticPredictor for text-based segmentation
-                self.sam3_predictor.set_image(image)
-                masks = self.sam3_predictor.set_text(text_prompt)
-                
-                if masks is not None:
-                    # Handle multiple masks
-                    if len(masks.shape) == 2:
-                        masks = masks[np.newaxis, ...]
-                    
-                    for i, mask_data in enumerate(masks):
-                        # Resize if needed
-                        if mask_data.shape != (h, w):
-                            mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-                            mask = (mask > 0.5).astype(np.uint8) * 255
-                        else:
-                            mask = (mask_data * 255).astype(np.uint8)
-                        
-                        # Convert to polygon
-                        polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
-                        polygon_normalized = [(x / w, y / h) for x, y in polygon]
-                        mask_base64 = self._mask_to_base64(mask)
-                        
-                        results_list.append({
-                            "mask": mask,
-                            "mask_base64": mask_base64,
-                            "polygon": polygon,
-                            "polygon_normalized": polygon_normalized,
-                            "area": area,
-                            "score": 0.9,
-                            "inference_time_ms": (time.time() - start_time) * 1000,
-                            "is_valid": len(polygon) >= settings.MIN_POLYGON_POINTS,
-                            "text_prompt": text_prompt,
-                            "instance_id": i
-                        })
+            # Set image for SAM3SemanticPredictor
+            self.sam3_predictor.set_image(image)
             
-            # Fallback to model.predict with texts if semantic predictor fails
-            if not results_list and self.model is not None:
-                results = self.model.predict(
-                    source=image,
-                    texts=[text_prompt],
-                    verbose=False
-                )
-                
-                if results and len(results) > 0 and results[0].masks is not None:
-                    for i, mask_data in enumerate(results[0].masks.data.cpu().numpy()):
-                        if mask_data.shape != (h, w):
-                            mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-                            mask = (mask > 0.5).astype(np.uint8) * 255
-                        else:
-                            mask = (mask_data * 255).astype(np.uint8)
-                        
-                        polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
-                        polygon_normalized = [(x / w, y / h) for x, y in polygon]
-                        mask_base64 = self._mask_to_base64(mask)
-                        
-                        score = float(results[0].boxes.conf[i]) if results[0].boxes is not None and i < len(results[0].boxes.conf) else 0.9
-                        
-                        results_list.append({
-                            "mask": mask,
-                            "mask_base64": mask_base64,
-                            "polygon": polygon,
-                            "polygon_normalized": polygon_normalized,
-                            "area": area,
-                            "score": score,
-                            "inference_time_ms": (time.time() - start_time) * 1000,
-                            "is_valid": len(polygon) >= settings.MIN_POLYGON_POINTS,
-                            "text_prompt": text_prompt,
-                            "instance_id": i
-                        })
+            # Run text-based concept segmentation
+            # SAM3 natively understands text prompts like "open eggs", "red apple", "person with hat"
+            sam_results = self.sam3_predictor(text=[text_prompt])
+            
+            if not sam_results or len(sam_results) == 0:
+                return [{
+                    "error": f"No '{text_prompt}' found in this image",
+                    "is_valid": False
+                }]
+            
+            result = sam_results[0]
+            
+            # Check if masks were found
+            if result.masks is None or len(result.masks.data) == 0:
+                return [{
+                    "error": f"No '{text_prompt}' found in this image",
+                    "is_valid": False
+                }]
+            
+            # Process each detected mask
+            masks_data = result.masks.data.cpu().numpy()
+            boxes_data = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else None
+            scores_data = result.boxes.conf.cpu().numpy() if result.boxes is not None else None
+            
+            for i, mask_data in enumerate(masks_data):
+                try:
+                    # Resize mask to original image size if needed
+                    if mask_data.shape != (h, w):
+                        mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                        mask = (mask > 0.5).astype(np.uint8) * 255
+                    else:
+                        mask = (mask_data * 255).astype(np.uint8)
+                    
+                    # Convert to polygon
+                    polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
+                    
+                    if len(polygon) < settings.MIN_POLYGON_POINTS:
+                        continue
+                    
+                    polygon_normalized = [(x / w, y / h) for x, y in polygon]
+                    mask_base64 = self._mask_to_base64(mask)
+                    
+                    # Get bbox and score
+                    if boxes_data is not None and i < len(boxes_data):
+                        bbox = boxes_data[i]
+                        score = float(scores_data[i]) if scores_data is not None else 0.9
+                    else:
+                        # Compute bbox from polygon
+                        xs = [p[0] for p in polygon]
+                        ys = [p[1] for p in polygon]
+                        bbox = [min(xs), min(ys), max(xs), max(ys)]
+                        score = 0.9
+                    
+                    results_list.append({
+                        "mask": mask,
+                        "mask_base64": mask_base64,
+                        "polygon": polygon,
+                        "polygon_normalized": polygon_normalized,
+                        "area": area,
+                        "score": score,
+                        "bbox": {"x_min": bbox[0], "y_min": bbox[1], "x_max": bbox[2], "y_max": bbox[3]},
+                        "inference_time_ms": (time.time() - start_time) * 1000,
+                        "is_valid": True,
+                        "text_prompt": text_prompt,
+                        "instance_id": i
+                    })
+                except Exception as mask_error:
+                    print(f"Error processing mask {i}: {mask_error}")
+                    continue
                         
         except Exception as e:
             print(f"SAM3 text prediction error: {e}")
+            import traceback
+            traceback.print_exc()
             return [{
                 "error": str(e),
                 "is_valid": False
@@ -538,6 +614,164 @@ class SAMService:
                 "is_valid": False
             }]
         
+        return results_list
+    
+    def auto_annotate(
+        self,
+        image: np.ndarray,
+        image_id: str,
+        detector_id: Optional[str] = None,
+        confidence: float = 0.3,
+        simplification_epsilon: float = 2.0
+    ) -> List[Dict[str, Any]]:
+        """
+        Auto-annotate using YOLO detector + SAM3 for precise polygon segmentation
+        
+        Args:
+            image: RGB image as numpy array
+            image_id: Image identifier
+            detector_id: Which detector to use (loads if not current)
+            confidence: Detection confidence threshold
+            simplification_epsilon: Polygon simplification factor
+            
+        Returns:
+            List of dictionaries with mask, polygon, score, class_id, class_name for each detection
+        """
+        if not self._is_sam3:
+            return [{
+                "error": "Auto-annotation requires SAM3 model",
+                "is_valid": False
+            }]
+        
+        start_time = time.time()
+        h, w = image.shape[:2]
+        results_list = []
+        
+        try:
+            # Load specified detector or use current one
+            if detector_id and detector_id != self._current_detector_id:
+                if not self.load_detector(detector_id):
+                    return [{
+                        "error": f"Failed to load detector: {detector_id}",
+                        "is_valid": False
+                    }]
+            elif self._yolo_detector is None:
+                # Try to load first available detector
+                detectors = self.get_available_detectors()
+                if detectors:
+                    if not self.load_detector(detectors[0]["id"]):
+                        return [{
+                            "error": "No detector models available",
+                            "is_valid": False
+                        }]
+                else:
+                    return [{
+                        "error": "No detector models found in detectors folder",
+                        "is_valid": False
+                    }]
+            
+            print(f"Running auto-annotation with detector: {self._current_detector_id}")
+            print(f"Detector classes: {self._yolo_class_names}")
+            print(f"Confidence threshold: {confidence}")
+            
+            # Run YOLO detection with higher max detections
+            yolo_results = self._yolo_detector.predict(
+                source=image,
+                conf=confidence,
+                max_det=300,  # Allow up to 300 detections
+                verbose=False
+            )
+            
+            if not yolo_results or len(yolo_results) == 0:
+                return [{
+                    "error": "No objects detected in the image",
+                    "is_valid": False
+                }]
+            
+            detections = yolo_results[0]
+            
+            if detections.boxes is None or len(detections.boxes) == 0:
+                return [{
+                    "error": "No objects detected in the image",
+                    "is_valid": False
+                }]
+            
+            print(f"Detected {len(detections.boxes)} objects")
+            
+            # Process each detection
+            for i, box in enumerate(detections.boxes):
+                try:
+                    # Get detection info
+                    class_id = int(box.cls[0])
+                    class_name = self._yolo_class_names.get(class_id, f"class_{class_id}")
+                    bbox = box.xyxy[0].cpu().numpy().tolist()  # [x1, y1, x2, y2]
+                    det_score = float(box.conf[0])
+                    
+                    print(f"  Object {i}: {class_name} (conf: {det_score:.2f}) bbox: {bbox}")
+                    
+                    # Use SAM3 to segment the detected object
+                    sam_results = self.model.predict(
+                        source=image,
+                        bboxes=[bbox],
+                        verbose=False
+                    )
+                    
+                    if sam_results and len(sam_results) > 0 and sam_results[0].masks is not None:
+                        mask_data = sam_results[0].masks.data[0].cpu().numpy()
+                        
+                        # Resize mask to original image size if needed
+                        if mask_data.shape != (h, w):
+                            mask = cv2.resize(mask_data.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+                            mask = (mask > 0.5).astype(np.uint8) * 255
+                        else:
+                            mask = (mask_data * 255).astype(np.uint8)
+                        
+                        # Convert to polygon
+                        polygon, area = self._mask_to_polygon(mask, simplification_epsilon)
+                        
+                        if len(polygon) < settings.MIN_POLYGON_POINTS:
+                            print(f"    Skipping - polygon too small ({len(polygon)} points)")
+                            continue
+                        
+                        polygon_normalized = [(x / w, y / h) for x, y in polygon]
+                        mask_base64 = self._mask_to_base64(mask)
+                        
+                        results_list.append({
+                            "mask": mask,
+                            "mask_base64": mask_base64,
+                            "polygon": polygon,
+                            "polygon_normalized": polygon_normalized,
+                            "area": area,
+                            "score": det_score,
+                            "bbox": {"x_min": bbox[0], "y_min": bbox[1], "x_max": bbox[2], "y_max": bbox[3]},
+                            "inference_time_ms": (time.time() - start_time) * 1000,
+                            "is_valid": True,
+                            "class_id": class_id,
+                            "class_name": class_name,
+                            "instance_id": i
+                        })
+                        print(f"    Added annotation for {class_name}")
+                        
+                except Exception as seg_error:
+                    print(f"SAM3 segmentation error for detection {i}: {seg_error}")
+                    continue
+                        
+        except Exception as e:
+            print(f"Auto-annotation error: {e}")
+            import traceback
+            traceback.print_exc()
+            return [{
+                "error": str(e),
+                "is_valid": False
+            }]
+        
+        if not results_list:
+            return [{
+                "error": "No objects could be annotated",
+                "is_valid": False
+            }]
+        
+        print(f"Auto-annotation complete: {len(results_list)} objects annotated")
         return results_list
     
     def _generate_mock_mask(

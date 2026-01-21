@@ -100,6 +100,7 @@ export interface SAM3TextPredictResult {
   mask_base64?: string;
   instance_id: number;
   text_prompt: string;
+  bbox?: BoundingBox;
 }
 
 export interface SAM3TextPredictResponse {
@@ -107,6 +108,67 @@ export interface SAM3TextPredictResponse {
   total_instances: number;
   inference_time_ms: number;
   is_sam3: boolean;
+}
+
+// ============ Detector Types ============
+
+export interface DetectorInfo {
+  id: string;
+  name: string;
+  filename: string;
+  size: string;
+  is_loaded: boolean;
+}
+
+export interface DetectorClass {
+  id: number;
+  name: string;
+}
+
+export interface DetectorsListResponse {
+  detectors: DetectorInfo[];
+  current_detector: string | null;
+}
+
+export interface SwitchDetectorResponse {
+  success: boolean;
+  detector_id: string;
+  message: string;
+  classes: DetectorClass[];
+}
+
+export interface DetectorClassesResponse {
+  classes: DetectorClass[];
+  detector_id: string | null;
+}
+
+// ============ Auto-Annotation Types ============
+
+export interface AutoAnnotateRequest {
+  image_id: string;
+  detector_id?: string;
+  confidence?: number;
+  simplification_epsilon?: number;
+  return_mask?: boolean;
+}
+
+export interface AutoAnnotateResult {
+  polygon: PolygonResult;
+  polygon_normalized: [number, number][];
+  score: number;
+  mask_base64?: string;
+  instance_id: number;
+  class_id: number;
+  class_name: string;
+  bbox?: BoundingBox;
+}
+
+export interface AutoAnnotateResponse {
+  results: AutoAnnotateResult[];
+  total_instances: number;
+  inference_time_ms: number;
+  detector_id: string;
+  detector_classes: DetectorClass[];
 }
 
 // ============ Label Types ============
@@ -130,8 +192,8 @@ export interface LoadLabelsResponse {
 
 // ============ UI State Types ============
 
-export type ToolMode = 'select' | 'bbox' | 'point';
-export type PointType = 'positive' | 'negative';
+export type ToolMode = 'select' | 'bbox' | 'lasso';
+export type LassoMode = 'add' | 'subtract';
 
 export interface CanvasState {
   scale: number;

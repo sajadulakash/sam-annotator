@@ -6,11 +6,7 @@ import { useStore } from '../store/useStore';
 import { 
   Square, 
   Trash2, 
-  Eye, 
-  EyeOff, 
   Settings,
-  Plus,
-  Minus
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -46,7 +42,7 @@ export function RightPanel() {
               Draw a bounding box to start.
             </div>
           ) : (
-            objects.map((obj, index) => (
+            objects.map((obj) => (
               <div
                 key={obj.id}
                 onClick={() => selectObject(obj.id)}
