@@ -57,6 +57,7 @@ datasets/
 *.png
 *.webp
 !frontend/public/**
+!assets/**
 
 # Temp
 tmp/
